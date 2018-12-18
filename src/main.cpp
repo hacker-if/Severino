@@ -6,6 +6,9 @@
 #include <BLAKE2s.h>
 #include <base64.hpp>
 
+#include <TimeLib.h>
+#include <NtpClientLib.h>
+
 // Definições de pinos
 #define BUTTON_PIN 5  // D1
 #define OPEN_PIN 14   // D5
@@ -103,7 +106,10 @@ void reconnectWifi() {
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
-randomSeed(micros());
+  // Iniciando NTP
+  NTP.begin();
+
+  randomSeed(micros());
 }
 
 bool reconnectMQTT() {
@@ -129,6 +135,14 @@ bool reconnectMQTT() {
 
 // callback que lida com as mensagem recebidas
 void mqtt_callback(char* topic, byte* payload, unsigned int length) {
+  // // mostra tempo
+  // Serial.print("tempo: "); Serial.println(NTP.getTime());
+  // // imprime mensagem
+  // Serial.print("msg: ");
+  // for (byte i=0; i<length; i++){
+  //   Serial.print(char(payload[i]));
+  // }
+  // Serial.println();
 
   // encontrando o tamanho da mensagem, limitada por SEP
   byte msg_len = 0;
@@ -166,8 +180,10 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   char* command = strtok(msg, ":");     // comando
   long temp = atol(strtok(NULL, "\0")); // timestamp do envio da msg
 
-  if(strcmp(command, "liberar") == 0 && temp > 0) {
+  if(strcmp(command, "liberar") == 0 && abs(temp - NTP.getTime()) < 3) {
     destravar_porta();
+  } else {
+    Serial.println("comando ou timestamp invalidos");
   }
 }
 
@@ -220,6 +236,8 @@ void loop() {
   // reconecta ao wifi
   if (WiFi.status() != WL_CONNECTED) {
     unsigned long now = millis();
+    // Desabilita NTP
+    NTP.stop();
     if(now - wifi_lastrc > wifi_rcinterval) {
       reconnectWifi();
       wifi_lastrc = now;

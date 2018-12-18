@@ -13,3 +13,7 @@ O projeto foi escrito usando o [PlatformIO](https://platformio.org/install). Uma
 Algorítimo de BLAKE2s para autenticação: [Arduino Cryptography Library](https://rweather.github.io/arduinolibs/crypto.html)
 
 Conversão para Base64: [base64_arduino](https://github.com/adamvr/arduino-base64)
+
+[TimeLib](https://github.com/PaulStoffregen/Time)
+
+[NTPClientLib](https://github.com/gmag11/NtpClient)
