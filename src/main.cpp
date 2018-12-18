@@ -27,7 +27,7 @@ bool destravado, aberto;
 
 // variáveis do wifi
 const char* ssid = "****";
-const char* pass = "***";
+const char* pass = "****";
 const unsigned long wifi_rcinterval = 1000; // Intervalo entre reconexões
 unsigned long wifi_lastrc;
 WiFiClient wclient;

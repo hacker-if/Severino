@@ -8,3 +8,5 @@
 
 # Scripts de teste
 teste*
+*.py
+*.ipynb
