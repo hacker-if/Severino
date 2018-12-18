@@ -7,9 +7,9 @@
 #include <base64.hpp>
 
 // Definições de pinos
-#define BUTTON_PIN 5
-#define OPEN_PIN 14
-#define LED_PIN 12
+#define BUTTON_PIN 5  // D1
+#define OPEN_PIN 14   // D5
+#define LED_PIN 12    // D6
 
 // definições de parâmetros de tempo
 #define T_DESTRAVADO 60000L
@@ -27,14 +27,13 @@ bool destravado, aberto;
 
 // variáveis do wifi
 const char* ssid = "****";
-const char* pass = "****";
+const char* pass = "***";
 const unsigned long wifi_rcinterval = 1000; // Intervalo entre reconexões
 unsigned long wifi_lastrc;
 WiFiClient wclient;
 
 //variável do cliente MQTT
-// const char* mqtt_server = "broker.mqttdashboard.com";
-IPAddress mqtt_server(192,168,1,75);
+const char* mqtt_server = "broker.mqttdashboard.com";
 const char* mqtt_inTopic = "testarhs/porta";   // nome do tópico de publicação
 const char* mqtt_outTopic = "testarhs/server";  // nome do tópico de inscrição
 const unsigned long mqtt_rcinterval = 3000;     // Intervalo entre reconexões
@@ -68,9 +67,9 @@ void travar_porta() {
 
 void abre_porta() {
   aberto = true;
-  digitalWrite(OPEN_PIN, HIGH);
-  travar_porta();
+  digitalWrite(OPEN_PIN, HIGH);  
   Serial.println("Porta aberta");
+  travar_porta();
   mqtt_client.publish(mqtt_outTopic, "Porta aberta");
 }
 
@@ -108,7 +107,7 @@ randomSeed(micros());
 }
 
 bool reconnectMQTT() {
-  Serial.println("Connecting to the MQTT broker...");
+  Serial.println("Conectando-se ao MQTT...");
   String client_id = "clientid_";
   client_id += String(random(0xffff), HEX);
   if (mqtt_client.connect(client_id.c_str())) {
@@ -116,6 +115,8 @@ bool reconnectMQTT() {
     mqtt_client.publish(mqtt_outTopic, "hello world", true);
     // ... and resubscribe
     mqtt_client.subscribe(mqtt_inTopic);
+    Serial.print("Conectado ao broker: ");
+    Serial.println(mqtt_server);
   } else {
     Serial.print("falha, rc=");
     Serial.print(mqtt_client.state());
@@ -183,9 +184,6 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
-  // digitalWrite(OPEN_PIN, HIGH);
-  // digitalWrite(LED_PIN, HIGH);
-
   // configuracao do wifi
   WiFi.mode(WIFI_STA);
 
@@ -202,7 +200,6 @@ void loop() {
   // Se a porta estiver liberada para abertura...
   if (destravado) {
   // abre a porta se o botão for pressionado
-    // if (button.update() == LOW) {
     if (digitalRead(BUTTON_PIN) == LOW) {
       abre_porta();
       t_aberto = millis();
@@ -214,7 +211,7 @@ void loop() {
     }
   }
 
-  // Mantém a porta aberta por "T_ABERTOR" ms e para
+  // Mantém a porta aberta por "T_ABERTO" ms e para
   if (aberto && millis() - t_aberto > T_ABERTO) {
     digitalWrite(OPEN_PIN, LOW);
     aberto = false;
