@@ -21,6 +21,7 @@
 // definições para as mensagens
 #define SEP '$'
 
+
 //---------------------------------------------//
 //            VARIÁVEIS GLOBAIS
 //---------------------------------------------//
@@ -29,23 +30,27 @@ unsigned long t_destravado, t_aberto;
 bool destravado, aberto;
 
 // variáveis do wifi
-const char* ssid = "****";
-const char* pass = "****";
+const char* ssid = "IFnet";
+const char* pass = "";
 const unsigned long wifi_rcinterval = 1000; // Intervalo entre reconexões
 unsigned long wifi_lastrc;
 WiFiClient wclient;
 
 //variável do cliente MQTT
-const char* mqtt_server = "broker.mqttdashboard.com";
-const char* mqtt_inTopic = "testarhs/porta";   // nome do tópico de publicação
-const char* mqtt_outTopic = "testarhs/server";  // nome do tópico de inscrição
+// const char* mqtt_server = "broker.mqttdashboard.com";
+const char* mqtt_server = "18.231.106.101";
+const char* mqtt_inTopic = "fechadura";   // nome do tópico de publicação
+const char* mqtt_outTopic = "server";  // nome do tópico de inscrição
+const char* mqtt_username = "fechadura";
+const char* mqtt_passwd = "1234";
 const unsigned long mqtt_rcinterval = 3000;     // Intervalo entre reconexões
 unsigned long mqtt_lastrc;
 PubSubClient mqtt_client(wclient);
 
 // Variáveis para autenticação de msgs
 BLAKE2s blake;
-byte sig_key[] = "you-will-never-guess-again";
+// byte sig_key[] = "you-will-never-guess-again";
+byte sig_key[] = "c4d18dd0141c3d40cbdb4ed8f1373b8f";
 byte key_len = sizeof(sig_key) - 1;
 const byte sig_len = 16;
 const byte b64_len = (sig_len + 2) / 3 * 4;
@@ -53,29 +58,6 @@ const byte b64_len = (sig_len + 2) / 3 * 4;
 //---------------------------------------------//
 //            FUNÇÕES
 //---------------------------------------------//
-void destravar_porta() {
-  t_destravado = millis();
-  destravado = true;
-  digitalWrite(LED_PIN, HIGH);
-  Serial.println("Porta destravada");
-  mqtt_client.publish(mqtt_outTopic, "Porta destravada");
-}
-
-void travar_porta() {
-  destravado = false;
-  digitalWrite(LED_PIN, LOW);
-  Serial.println("Porta travada");
-  mqtt_client.publish(mqtt_outTopic, "Porta travada");
-}
-
-void abre_porta() {
-  aberto = true;
-  digitalWrite(OPEN_PIN, HIGH);  
-  Serial.println("Porta aberta");
-  travar_porta();
-  mqtt_client.publish(mqtt_outTopic, "Porta aberta");
-}
-
 void sign(byte* hash, byte* msg, byte msg_len) {
   blake.reset(sig_key, key_len, sig_len);
   blake.update(msg, msg_len);
@@ -91,6 +73,51 @@ bool check_payload(byte* msg, byte msg_len, byte* sig) {
     if (b64[i] != sig[i]) return false;
   }
   return true;
+}
+
+void mqtt_publish(const char* topic, const char* msg) {
+  byte l = 0;
+  while(msg[l] != '\0' || l < 40) l++;
+  if (l>0) l--;
+  else if (l >= 40) {
+    Serial.println("Erro, msg. nao enviado, tamanho max excedido");
+    return;
+  }
+  // char* payload = (char*)malloc(l + 12 + b64_len);
+  char payload[l + 12 + b64_len];
+  sprintf(payload, "%s.%lu$", msg, NTP.getTime());
+
+  byte hash[sig_len];
+  sign(hash, (byte *)msg, l);
+  unsigned char hash2[b64_len];
+  encode_base64(hash, sig_len, hash2);
+  strcat(payload, reinterpret_cast<const char *>(hash2));
+
+  mqtt_client.publish(topic, payload);
+}
+
+void destravar_porta() {
+  t_destravado = millis();
+  destravado = true;
+  digitalWrite(LED_PIN, HIGH);
+  Serial.println("Porta destravada");
+  mqtt_client.publish(mqtt_outTopic, "Porta destravada");
+}
+
+void travar_porta() {
+  destravado = false;
+  digitalWrite(LED_PIN, LOW);
+  Serial.println("Porta travada");
+  // mqtt_client.publish(mqtt_outTopic, "Porta travada");
+}
+
+void abre_porta() {
+  aberto = true;
+  digitalWrite(OPEN_PIN, HIGH);
+  Serial.println("Porta aberta");
+  travar_porta();
+  mqtt_client.publish(mqtt_outTopic, "Porta aberta");
+  mqtt_publish(mqtt_outTopic, "Porta aberta");
 }
 
 void reconnectWifi() {
@@ -116,7 +143,7 @@ bool reconnectMQTT() {
   Serial.println("Conectando-se ao MQTT...");
   String client_id = "clientid_";
   client_id += String(random(0xffff), HEX);
-  if (mqtt_client.connect(client_id.c_str())) {
+  if (mqtt_client.connect(client_id.c_str(), mqtt_username, mqtt_passwd)) {
     // Once connected, publish an announcement...
     mqtt_client.publish(mqtt_outTopic, "hello world", true);
     // ... and resubscribe
@@ -132,6 +159,10 @@ bool reconnectMQTT() {
   }
   return mqtt_client.connected();
 }
+
+
+// payload = msg.12353613$ahsdfp7q82hgpa8sfoqwuey
+
 
 // callback que lida com as mensagem recebidas
 void mqtt_callback(char* topic, byte* payload, unsigned int length) {
@@ -180,7 +211,7 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   char* command = strtok(msg, ":");     // comando
   long temp = atol(strtok(NULL, "\0")); // timestamp do envio da msg
 
-  if(strcmp(command, "liberar") == 0 && abs(temp - NTP.getTime()) < 3) {
+  if(strcmp(command, "liberar") == 0 && abs(temp - NTP.getTime()) < 10) {
     destravar_porta();
   } else {
     Serial.println("comando ou timestamp invalidos");
