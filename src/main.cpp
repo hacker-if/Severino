@@ -9,10 +9,17 @@
 #include <TimeLib.h>
 #include <NtpClientLib.h>
 
+#include <SPI.h>
+#include <MFRC522.h>
+
+// Pinos do ISP
+#define SS_PIN  15    // D8
+#define RST_PIN 0     // D3
+
 // Definições de pinos
-#define BUTTON_PIN 5  // D1
-#define OPEN_PIN 14   // D5
-#define LED_PIN 12    // D6
+#define BUTTON_PIN  16  // D0
+#define OPEN_PIN    5   // D1
+#define LED_PIN     4   // D2
 
 // definições de parâmetros de tempo
 #define T_DESTRAVADO 60000L
@@ -54,6 +61,10 @@ byte sig_key[] = "c4d18dd0141c3d40cbdb4ed8f1373b8f";
 byte key_len = sizeof(sig_key) - 1;
 const byte sig_len = 16;
 const byte b64_len = (sig_len + 2) / 3 * 4;
+
+// Leitor NFC MFRC522
+MFRC522 mfrc522(SS_PIN, RST_PIN); // Instance of the class
+
 
 //---------------------------------------------//
 //            FUNÇÕES
@@ -116,8 +127,7 @@ void abre_porta() {
   digitalWrite(OPEN_PIN, HIGH);
   Serial.println("Porta aberta");
   travar_porta();
-  mqtt_client.publish(mqtt_outTopic, "Porta aberta");
-  mqtt_publish(mqtt_outTopic, "Porta aberta");
+  mqtt_publish(mqtt_outTopic, "aberto");
 }
 
 void reconnectWifi() {
@@ -159,10 +169,6 @@ bool reconnectMQTT() {
   }
   return mqtt_client.connected();
 }
-
-
-// payload = msg.12353613$ahsdfp7q82hgpa8sfoqwuey
-
 
 // callback que lida com as mensagem recebidas
 void mqtt_callback(char* topic, byte* payload, unsigned int length) {
@@ -218,6 +224,28 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
+void rfid_loop() {
+  if (!mfrc522.PICC_IsNewCardPresent()) {
+    delay(50);
+    return;
+  }
+  if (!mfrc522.PICC_ReadCardSerial()) {
+    delay(50);
+    return;
+  }
+  mfrc522.PICC_HaltA();
+
+  char msg[20];
+  strcpy(msg, "uid:");
+
+  for (int i = 0; i < mfrc522.uid.size; ++i) {
+    sprintf(&msg[4 + i*2], "%02x", mfrc522.uid.uidByte[i]);
+  }
+
+  Serial.println(msg);
+  mqtt_publish(mqtt_outTopic, msg);
+}
+
 //---------------------------------------------//
 //                  SETUP
 //---------------------------------------------//
@@ -237,12 +265,19 @@ void setup() {
   // configuração do MQTT
   mqtt_client.setServer(mqtt_server, 1883);
   mqtt_client.setCallback(mqtt_callback);
+
+  // configura o NFC
+  SPI.begin(); // Init SPI bus
+  mfrc522.PCD_Init(); // Init MFRC522
 }
 
 //---------------------------------------------//
 //                  LOOP
 //---------------------------------------------//
 void loop() {
+  // Tentar ler cartao e adquirir seu rerial
+  rfid_loop();
+
   // Controle da porta
   // Se a porta estiver liberada para abertura...
   if (destravado) {
