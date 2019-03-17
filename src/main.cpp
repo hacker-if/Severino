@@ -24,6 +24,7 @@
 // definições de parâmetros de tempo
 #define T_DESTRAVADO 60000L
 #define T_ABERTO 1000
+#define T_ADCIONAR 30000L
 
 // definições para as mensagens
 #define SEP '$'
@@ -33,8 +34,9 @@
 //            VARIÁVEIS GLOBAIS
 //---------------------------------------------//
 // variáveis do controle da porta
-unsigned long t_destravado, t_aberto;
-bool destravado, aberto;
+unsigned long t_destravado, t_aberto, t_adcionar;
+bool destravado, aberto, adcionar_uid;
+unsigned int user_id;
 
 // variáveis do wifi
 const char* ssid = "IFnet";
@@ -87,21 +89,18 @@ bool check_payload(byte* msg, byte msg_len, byte* sig) {
 }
 
 void mqtt_publish(const char* topic, const char* msg) {
-  byte l = 0;
-  while(msg[l] != '\0' || l < 40) l++;
-  if (l>0) l--;
-  else if (l >= 40) {
-    Serial.println("Erro, msg. nao enviado, tamanho max excedido");
-    return;
-  }
   // char* payload = (char*)malloc(l + 12 + b64_len);
-  char payload[l + 12 + b64_len];
-  sprintf(payload, "%s.%lu$", msg, NTP.getTime());
+  char payload[40 + b64_len];
+  sprintf(payload, "%s.%lu", msg, NTP.getTime());
 
   byte hash[sig_len];
-  sign(hash, (byte *)msg, l);
+  byte msg_len = (byte)strlen(payload);
+  Serial.println(msg_len);
+
+  sign(hash, (byte *)payload, msg_len);
   unsigned char hash2[b64_len];
   encode_base64(hash, sig_len, hash2);
+  strcat(payload, "$");
   strcat(payload, reinterpret_cast<const char *>(hash2));
 
   mqtt_client.publish(topic, payload);
@@ -172,15 +171,6 @@ bool reconnectMQTT() {
 
 // callback que lida com as mensagem recebidas
 void mqtt_callback(char* topic, byte* payload, unsigned int length) {
-  // // mostra tempo
-  // Serial.print("tempo: "); Serial.println(NTP.getTime());
-  // // imprime mensagem
-  // Serial.print("msg: ");
-  // for (byte i=0; i<length; i++){
-  //   Serial.print(char(payload[i]));
-  // }
-  // Serial.println();
-
   // encontrando o tamanho da mensagem, limitada por SEP
   byte msg_len = 0;
   for (; msg_len < length && payload[msg_len] != SEP; msg_len++);
@@ -214,13 +204,27 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   // agora que a msg foi autenticada execute o que foi pedido
   Serial.println("ass. autenticada");
 
-  char* command = strtok(msg, ":");     // comando
+  char* data = strtok(msg, ".");     // comando
   long temp = atol(strtok(NULL, "\0")); // timestamp do envio da msg
 
-  if(strcmp(command, "liberar") == 0 && abs(temp - NTP.getTime()) < 10) {
+  if ( abs(temp - NTP.getTime()) > 10) {
+    Serial.println("timestamp expirado");
+    return;
+  }
+
+  char* command = strtok(data, ":");
+
+  if(strcmp(command, "liberar") == 0) {
     destravar_porta();
+  } else if (strcmp(command, "id") == 0) {
+    adcionar_uid = true;
+    t_adcionar = millis();
+    user_id = atol(strtok(NULL, ","));
+  } else if (strcmp(command, "abrir") == 0) {
+      abre_porta();
+      t_aberto = millis();
   } else {
-    Serial.println("comando ou timestamp invalidos");
+    Serial.println("comando invalido");
   }
 }
 
@@ -236,10 +240,18 @@ void rfid_loop() {
   mfrc522.PICC_HaltA();
 
   char msg[20];
-  strcpy(msg, "uid:");
+  byte msg_len;
+  if (adcionar_uid) {
+    sprintf(msg, "id:%d,uid:", user_id);
+    adcionar_uid = false;
+    msg_len = strlen(msg);
+  } else {
+    strcpy(msg, "uid:");
+    msg_len = 4;
+  }
 
   for (int i = 0; i < mfrc522.uid.size; ++i) {
-    sprintf(&msg[4 + i*2], "%02x", mfrc522.uid.uidByte[i]);
+    sprintf(&msg[msg_len + i*2], "%02x", mfrc522.uid.uidByte[i]);
   }
 
   Serial.println(msg);
@@ -275,8 +287,12 @@ void setup() {
 //                  LOOP
 //---------------------------------------------//
 void loop() {
-  // Tentar ler cartao e adquirir seu rerial
+  // Tentar ler cartao e adquirir seu serial
   rfid_loop();
+
+  if (adcionar_uid && millis() - t_adcionar > T_ADCIONAR) {
+    adcionar_uid = false;
+  }
 
   // Controle da porta
   // Se a porta estiver liberada para abertura...
