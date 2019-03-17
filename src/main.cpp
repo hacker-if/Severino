@@ -1,42 +1,33 @@
 #include <Arduino.h>
-
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
-
 #include <BLAKE2s.h>
-#include <base64.hpp>
-
+#include <Base64.h>
 #include <TimeLib.h>
 #include <NtpClientLib.h>
-
 #include <SPI.h>
 #include <MFRC522.h>
+#include <Door.h>
+
+// Abilita msg. por serial
+#define DEBUG
 
 // Pinos do ISP
 #define SS_PIN  15    // D8
 #define RST_PIN 0     // D3
 
 // Definições de pinos
-#define BUTTON_PIN  16  // D0
+#define BUTTON_PIN  2   // D4
 #define OPEN_PIN    5   // D1
 #define LED_PIN     4   // D2
-
-// definições de parâmetros de tempo
-#define T_DESTRAVADO 60000L
-#define T_ABERTO 1000
-#define T_ADCIONAR 30000L
-
-// definições para as mensagens
-#define SEP '$'
-
 
 //---------------------------------------------//
 //            VARIÁVEIS GLOBAIS
 //---------------------------------------------//
 // variáveis do controle da porta
-unsigned long t_destravado, t_aberto, t_adcionar;
-bool destravado, aberto, adcionar_uid;
+Door porta(OPEN_PIN, BUTTON_PIN, LED_PIN);
 unsigned int user_id;
+byte last_mode = 0;
 
 // variáveis do wifi
 const char* ssid = "IFnet";
@@ -59,192 +50,137 @@ PubSubClient mqtt_client(wclient);
 // Variáveis para autenticação de msgs
 BLAKE2s blake;
 // byte sig_key[] = "you-will-never-guess-again";
-byte sig_key[] = "c4d18dd0141c3d40cbdb4ed8f1373b8f";
-byte key_len = sizeof(sig_key) - 1;
+const byte sig_key[] = "c4d18dd0141c3d40cbdb4ed8f1373b8f";
+const byte key_len = sizeof(sig_key) - 1;
 const byte sig_len = 16;
-const byte b64_len = (sig_len + 2) / 3 * 4;
+const byte b64_len = Base64.encodedLength(sig_len);
 
 // Leitor NFC MFRC522
-MFRC522 mfrc522(SS_PIN, RST_PIN); // Instance of the class
-
+MFRC522 mfrc522(SS_PIN, RST_PIN);
 
 //---------------------------------------------//
 //            FUNÇÕES
 //---------------------------------------------//
-void sign(byte* hash, byte* msg, byte msg_len) {
+void sign(char* hash, char* msg, byte msg_len) {
+  char sig[sig_len];
   blake.reset(sig_key, key_len, sig_len);
   blake.update(msg, msg_len);
-  blake.finalize(hash, sig_len);
+  blake.finalize(sig, sig_len);
+  Base64.encode(hash, sig, sig_len);
+  sig[b64_len] = '\0';
 }
 
-bool check_payload(byte* msg, byte msg_len, byte* sig) {
-  byte test[sig_len];
+bool check_payload(char* hash, char* msg, byte msg_len) {
+  char test[b64_len + 1];
   sign(test, msg, msg_len);
-  byte b64[b64_len];
-  encode_base64(test, sig_len, b64);
-  for (int i = 0; i < b64_len; i++) {
-    if (b64[i] != sig[i]) return false;
-  }
-  return true;
+
+  bool result = true;
+
+  for (int i = 0; i < b64_len; i++)
+    if (test[i] != hash[i]) result = false;
+
+  return result;
 }
 
 void mqtt_publish(const char* topic, const char* msg) {
-  // char* payload = (char*)malloc(l + 12 + b64_len);
   char payload[40 + b64_len];
   sprintf(payload, "%s.%lu", msg, NTP.getTime());
 
-  byte hash[sig_len];
   byte msg_len = (byte)strlen(payload);
-  Serial.println(msg_len);
 
-  sign(hash, (byte *)payload, msg_len);
-  unsigned char hash2[b64_len];
-  encode_base64(hash, sig_len, hash2);
-  strcat(payload, "$");
-  strcat(payload, reinterpret_cast<const char *>(hash2));
+  payload[msg_len] = '$';
+  sign(&payload[msg_len + 1], payload, msg_len);
 
   mqtt_client.publish(topic, payload);
-}
-
-void destravar_porta() {
-  t_destravado = millis();
-  destravado = true;
-  digitalWrite(LED_PIN, HIGH);
-  Serial.println("Porta destravada");
-  mqtt_client.publish(mqtt_outTopic, "Porta destravada");
-}
-
-void travar_porta() {
-  destravado = false;
-  digitalWrite(LED_PIN, LOW);
-  Serial.println("Porta travada");
-  // mqtt_client.publish(mqtt_outTopic, "Porta travada");
-}
-
-void abre_porta() {
-  aberto = true;
-  digitalWrite(OPEN_PIN, HIGH);
-  Serial.println("Porta aberta");
-  travar_porta();
-  mqtt_publish(mqtt_outTopic, "aberto");
-}
-
-void reconnectWifi() {
-  Serial.print("Conectado-se a rede ");
-  Serial.print(ssid);
-  Serial.println("...");
-  WiFi.begin(ssid, pass);
-
-  if (WiFi.waitForConnectResult() != WL_CONNECTED)
-    return;
-
-  Serial.println("WiFi connected");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-
-  // Iniciando NTP
-  NTP.begin();
-
-  randomSeed(micros());
-}
-
-bool reconnectMQTT() {
-  Serial.println("Conectando-se ao MQTT...");
-  String client_id = "clientid_";
-  client_id += String(random(0xffff), HEX);
-  if (mqtt_client.connect(client_id.c_str(), mqtt_username, mqtt_passwd)) {
-    // Once connected, publish an announcement...
-    mqtt_client.publish(mqtt_outTopic, "hello world", true);
-    // ... and resubscribe
-    mqtt_client.subscribe(mqtt_inTopic);
-    Serial.print("Conectado ao broker: ");
-    Serial.println(mqtt_server);
-  } else {
-    Serial.print("falha, rc=");
-    Serial.print(mqtt_client.state());
-    Serial.print(" tentando novamente em ");
-    Serial.print(mqtt_rcinterval/1000);
-    Serial.println(" segundos");
-  }
-  return mqtt_client.connected();
 }
 
 // callback que lida com as mensagem recebidas
 void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   // encontrando o tamanho da mensagem, limitada por SEP
   byte msg_len = 0;
-  for (; msg_len < length && payload[msg_len] != SEP; msg_len++);
+  for (; msg_len < length && payload[msg_len] != '$'; msg_len++);
   // tamanho da assinatura
   byte sig_size = length - msg_len - 1;
 
   // ignora msg se a assinatura não tiver o tamanho correto
   if (sig_size != b64_len) {
+    #ifdef DEBUG
     Serial.println("msg. mal formatada");
+    #endif
+
     return;
   }
 
   // guarda msg como string
   char* msg = (char*)malloc(msg_len + 1);
   memcpy(msg, (char*)payload, msg_len);
-  msg[msg_len + 1] = '\0';
+  msg[msg_len] = '\0';
 
   // guarda assinatura como lista de bytes
-  byte* sig = (byte*)malloc(sig_size);
+  char sig[b64_len];
   memcpy(sig, payload + msg_len + 1, sig_size);
 
-  // testa assinatura
-  bool check = check_payload((byte*)msg, msg_len, sig);
-
   // ignora msg se a assinatura forneceda é incorreta
-  if (!check) {
+  if (!check_payload(sig, msg, msg_len)) {
+    #ifdef DEBUG
     Serial.println("ass. invalida");
+    #endif
+
     return;
   }
 
   // agora que a msg foi autenticada execute o que foi pedido
+  #ifdef DEBUG
   Serial.println("ass. autenticada");
+  #endif
 
   char* data = strtok(msg, ".");     // comando
-  long temp = atol(strtok(NULL, "\0")); // timestamp do envio da msg
+  long temp = atol(strtok(NULL, "")); // timestamp do envio da msg
 
-  if ( abs(temp - NTP.getTime()) > 10) {
+  if (abs(temp - NTP.getTime()) > 10) {
+    #ifdef DEBUG
     Serial.println("timestamp expirado");
+    #endif
+
     return;
   }
 
   char* command = strtok(data, ":");
 
   if(strcmp(command, "liberar") == 0) {
-    destravar_porta();
+    porta.unlock();
   } else if (strcmp(command, "id") == 0) {
-    adcionar_uid = true;
-    t_adcionar = millis();
+    porta.add_card();
     user_id = atol(strtok(NULL, ","));
   } else if (strcmp(command, "abrir") == 0) {
-      abre_porta();
-      t_aberto = millis();
-  } else {
+    porta.open();
+  }
+  #ifdef DEBUG
+  else {
     Serial.println("comando invalido");
   }
-}
+  #endif
+}// definições para as mensagens
+#define SEP '$'
 
 void rfid_loop() {
-  if (!mfrc522.PICC_IsNewCardPresent()) {
-    delay(50);
+  if (porta.mode == 1 || porta.mode == 2)
     return;
-  }
-  if (!mfrc522.PICC_ReadCardSerial()) {
-    delay(50);
+
+  if (!mfrc522.PICC_IsNewCardPresent())
     return;
-  }
+
+  if (!mfrc522.PICC_ReadCardSerial())
+    return;
+
   mfrc522.PICC_HaltA();
 
   char msg[20];
   byte msg_len;
-  if (adcionar_uid) {
+  if (porta.mode == 3) {
     sprintf(msg, "id:%d,uid:", user_id);
-    adcionar_uid = false;
     msg_len = strlen(msg);
+    porta.lock();
   } else {
     strcpy(msg, "uid:");
     msg_len = 4;
@@ -253,23 +189,75 @@ void rfid_loop() {
   for (int i = 0; i < mfrc522.uid.size; ++i) {
     sprintf(&msg[msg_len + i*2], "%02x", mfrc522.uid.uidByte[i]);
   }
-
+  #ifdef DEBUG
   Serial.println(msg);
+  #endif
   mqtt_publish(mqtt_outTopic, msg);
+}
+
+void reconnectWifi() {
+  #ifdef DEBUG
+  Serial.print("Conectado-se a rede ");
+  Serial.print(ssid);
+  Serial.println("...");
+  #endif
+
+  WiFi.begin(ssid, pass);
+
+  if (WiFi.waitForConnectResult() != WL_CONNECTED)
+    return;
+
+  #ifdef DEBUG
+  Serial.println("WiFi connected");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+  #endif
+
+  // Iniciando NTP
+  NTP.begin();
+
+  randomSeed(micros());
+}
+
+bool reconnectMQTT() {
+  #ifdef DEBUG
+  Serial.println("Conectando-se ao MQTT...");
+  #endif
+  String client_id = "clientid_";
+  client_id += String(random(0xffff), HEX);
+  if (mqtt_client.connect(client_id.c_str(), mqtt_username, mqtt_passwd)) {
+    // Once connected, publish an announcement...
+    mqtt_client.publish(mqtt_outTopic, "hello world", true);
+    // ... and resubscribe
+    mqtt_client.subscribe(mqtt_inTopic);
+
+    #ifdef DEBUG
+    Serial.print("Conectado ao broker: ");
+    Serial.println(mqtt_server);
+    #endif
+  }
+  #ifdef DEBUG
+  else {
+    Serial.print("falha, rc=");
+    Serial.print(mqtt_client.state());
+    Serial.print(" tentando novamente em ");
+    Serial.print(mqtt_rcinterval/1000);
+    Serial.println(" segundos");
+  }
+  #endif
+
+  return mqtt_client.connected();
 }
 
 //---------------------------------------------//
 //                  SETUP
 //---------------------------------------------//
 void setup() {
+  #ifdef DEBUG
   Serial.begin(115200);
   Serial.setDebugOutput(true);
   Serial.println();
-
-  //configuração dos pinos
-  pinMode(OPEN_PIN, OUTPUT);
-  pinMode(LED_PIN, OUTPUT);
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  #endif
 
   // configuracao do wifi
   WiFi.mode(WIFI_STA);
@@ -290,30 +278,24 @@ void loop() {
   // Tentar ler cartao e adquirir seu serial
   rfid_loop();
 
-  if (adcionar_uid && millis() - t_adcionar > T_ADCIONAR) {
-    adcionar_uid = false;
+  // loop o controle da porta
+  porta.update();
+
+  // enviar msg se a porta estiver aberta
+  if (porta.mode != last_mode) {
+    last_mode = porta.mode;
+    if (porta.mode == 2) mqtt_publish(mqtt_outTopic, "aberto");
+
+    #ifdef DEBUG
+    if (porta.mode == 0) Serial.println("Porta travada");
+    if (porta.mode == 1) Serial.println("Porta destravada");
+    if (porta.mode == 2) Serial.println("Porta aberta");
+    if (porta.mode == 3) Serial.println("Adcionando cartao");
+    #endif
   }
 
-  // Controle da porta
-  // Se a porta estiver liberada para abertura...
-  if (destravado) {
-  // abre a porta se o botão for pressionado
-    if (digitalRead(BUTTON_PIN) == LOW) {
-      abre_porta();
-      t_aberto = millis();
-    }
-
-    // retira a liberação da porta depois de 'T_LIBERADO' ms
-    if (millis() - t_destravado > T_DESTRAVADO) {
-      travar_porta();
-    }
-  }
-
-  // Mantém a porta aberta por "T_ABERTO" ms e para
-  if (aberto && millis() - t_aberto > T_ABERTO) {
-    digitalWrite(OPEN_PIN, LOW);
-    aberto = false;
-  }
+  // executa loop do MQTT
+  if (mqtt_client.connected()) mqtt_client.loop();
 
   // reconecta ao wifi
   if (WiFi.status() != WL_CONNECTED) {
@@ -334,7 +316,4 @@ void loop() {
       mqtt_lastrc = now;
     }
   }
-
-  // executa loop do MQTT
-  if (mqtt_client.connected()) mqtt_client.loop();
 }
